@@ -1,0 +1,260 @@
+// ============================================================
+// CRYPTO SCALP + BREAKOUT COMBINED STRATEGY
+// For TradingView - Use with webhook alerts to the bot
+// ============================================================
+// This Pine Script combines the key signals from the bot's strategies
+// and can send webhook alerts for automated execution.
+//
+// How to use:
+// 1. Open TradingView, add this indicator to your chart
+// 2. Set up alerts on this indicator
+// 3. In alert settings, set webhook URL to your bot's endpoint
+// 4. Use the alert message format shown below
+// ============================================================
+
+//@version=5
+indicator("Crypto Aggressive Scalp+Breakout", overlay=true, max_labels_count=50)
+
+// ============================================================
+// INPUTS
+// ============================================================
+// Scalp Momentum
+grp_scalp = "Scalp Momentum"
+scalp_rsi_len = input.int(7, "RSI Length", group=grp_scalp)
+scalp_rsi_os = input.int(25, "RSI Oversold", group=grp_scalp)
+scalp_rsi_ob = input.int(75, "RSI Overbought", group=grp_scalp)
+scalp_ema_fast = input.int(9, "EMA Fast", group=grp_scalp)
+scalp_ema_slow = input.int(21, "EMA Slow", group=grp_scalp)
+scalp_vol_mult = input.float(1.5, "Volume Multiplier", group=grp_scalp)
+scalp_tp = input.float(1.5, "Take Profit %", step=0.1, group=grp_scalp) / 100
+scalp_sl = input.float(0.7, "Stop Loss %", step=0.1, group=grp_scalp) / 100
+
+// Breakout
+grp_break = "Breakout Volume"
+break_lookback = input.int(20, "Lookback Period", group=grp_break)
+break_vol_mult = input.float(2.0, "Volume Surge Mult", group=grp_break)
+break_atr_len = input.int(14, "ATR Length", group=grp_break)
+break_atr_sl = input.float(1.5, "ATR SL Multiplier", group=grp_break)
+break_atr_tp = input.float(3.0, "ATR TP Multiplier", group=grp_break)
+
+// Trend Filter
+grp_trend = "Trend Filter"
+ema_50_len = input.int(50, "EMA 50 Length", group=grp_trend)
+ema_200_len = input.int(200, "EMA 200 Length", group=grp_trend)
+use_trend_filter = input.bool(true, "Use Trend Filter", group=grp_trend)
+adx_len = input.int(14, "ADX Length", group=grp_trend)
+adx_threshold = input.int(20, "ADX Threshold", group=grp_trend)
+
+// Display
+grp_display = "Display"
+show_scalp = input.bool(true, "Show Scalp Signals", group=grp_display)
+show_breakout = input.bool(true, "Show Breakout Signals", group=grp_display)
+show_levels = input.bool(true, "Show SL/TP Levels", group=grp_display)
+
+// ============================================================
+// CALCULATIONS
+// ============================================================
+
+// EMAs
+ema9 = ta.ema(close, scalp_ema_fast)
+ema21 = ta.ema(close, scalp_ema_slow)
+ema50 = ta.ema(close, ema_50_len)
+ema200 = ta.ema(close, ema_200_len)
+
+// RSI
+rsi_val = ta.rsi(close, scalp_rsi_len)
+
+// MACD
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
+
+// ATR
+atr_val = ta.atr(break_atr_len)
+
+// Volume
+vol_sma = ta.sma(volume, 20)
+vol_ratio = volume / vol_sma
+
+// ADX
+[diPlus, diMinus, adxValue] = ta.dmi(adx_len, adx_len)
+
+// Supertrend
+[supertrend, direction] = ta.supertrend(3, 10)
+
+// Bollinger Bands (for squeeze detection)
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+bbWidth = (bbUpper - bbLower) / bbMiddle
+
+// Keltner Channels (for squeeze detection)
+kcMiddle = ta.ema(close, 20)
+kcRange = ta.atr(20)
+kcUpper = kcMiddle + kcRange * 1.5
+kcLower = kcMiddle - kcRange * 1.5
+
+// Squeeze detection
+squeeze_on = bbLower > kcLower and bbUpper < kcUpper
+squeeze_off = not squeeze_on
+
+// Support/Resistance (simplified)
+highest_high = ta.highest(high, break_lookback)
+lowest_low = ta.lowest(low, break_lookback)
+
+// Stochastic RSI
+stoch_rsi_k = ta.sma(ta.stoch(rsi_val, rsi_val, rsi_val, 14), 3)
+stoch_rsi_d = ta.sma(stoch_rsi_k, 3)
+
+// ============================================================
+// SCALP MOMENTUM SIGNALS
+// ============================================================
+trend_up = not use_trend_filter or close > ema50
+trend_down = not use_trend_filter or close < ema50
+
+// Long Scalp
+scalp_long = rsi_val > scalp_rsi_os and
+             rsi_val < 60 and
+             rsi_val > rsi_val[1] and
+             ema9 > ema21 and
+             hist > hist[1] and
+             vol_ratio > scalp_vol_mult and
+             trend_up
+
+// Short Scalp
+scalp_short = rsi_val < scalp_rsi_ob and
+              rsi_val > 40 and
+              rsi_val < rsi_val[1] and
+              ema9 < ema21 and
+              hist < hist[1] and
+              vol_ratio > scalp_vol_mult and
+              trend_down
+
+// ============================================================
+// BREAKOUT VOLUME SIGNALS
+// ============================================================
+// Consolidation check
+was_squeezing = squeeze_on[1]
+squeeze_released = was_squeezing and squeeze_off
+
+// Breakout up
+breakout_up = close > highest_high[1] and
+              vol_ratio > break_vol_mult and
+              hist > 0 and
+              (squeeze_released or bbWidth < ta.sma(bbWidth, 20) * 0.8)
+
+// Breakout down
+breakout_down = close < lowest_low[1] and
+                vol_ratio > break_vol_mult and
+                hist < 0 and
+                (squeeze_released or bbWidth < ta.sma(bbWidth, 20) * 0.8)
+
+// ============================================================
+// COMBINED SIGNALS (avoid duplicate signals)
+// ============================================================
+// Cooldown: minimum bars between signals
+var int last_signal_bar = 0
+cooldown = 5
+can_signal = bar_index - last_signal_bar > cooldown
+
+// Final signals
+long_signal = can_signal and ((show_scalp and scalp_long) or (show_breakout and breakout_up))
+short_signal = can_signal and ((show_scalp and scalp_short) or (show_breakout and breakout_down))
+
+// Determine signal type for labeling
+is_scalp_long = show_scalp and scalp_long
+is_breakout_long = show_breakout and breakout_up
+is_scalp_short = show_scalp and scalp_short
+is_breakout_short = show_breakout and breakout_down
+
+// Calculate SL/TP
+long_sl = long_signal ? (is_breakout_long ? close - atr_val * break_atr_sl : close * (1 - scalp_sl)) : na
+long_tp = long_signal ? (is_breakout_long ? close + atr_val * break_atr_tp : close * (1 + scalp_tp)) : na
+short_sl = short_signal ? (is_breakout_short ? close + atr_val * break_atr_sl : close * (1 + scalp_sl)) : na
+short_tp = short_signal ? (is_breakout_short ? close - atr_val * break_atr_tp : close * (1 - scalp_tp)) : na
+
+// Track signals
+if long_signal or short_signal
+    last_signal_bar := bar_index
+
+// ============================================================
+// PLOTTING
+// ============================================================
+// EMAs
+plot(ema9, "EMA 9", color=color.new(color.yellow, 0), linewidth=1)
+plot(ema21, "EMA 21", color=color.new(color.orange, 0), linewidth=1)
+plot(ema50, "EMA 50", color=color.new(color.blue, 0), linewidth=2)
+plot(ema200, "EMA 200", color=color.new(color.purple, 30), linewidth=2)
+
+// Supertrend
+plot(supertrend, "Supertrend",
+     color=direction < 0 ? color.green : color.red,
+     linewidth=2, style=plot.style_linebr)
+
+// Squeeze dots
+plotshape(squeeze_on, "Squeeze On", shape.circle, location.bottom,
+          color=color.new(color.red, 0), size=size.tiny)
+plotshape(squeeze_released, "Squeeze Fire", shape.diamond, location.bottom,
+          color=color.new(color.lime, 0), size=size.small)
+
+// Signal markers
+plotshape(long_signal, "Long Signal", shape.triangleup, location.belowbar,
+          color=color.new(color.green, 0), size=size.normal,
+          text="LONG")
+plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar,
+          color=color.new(color.red, 0), size=size.normal,
+          text="SHORT")
+
+// SL/TP levels
+plot(show_levels ? long_sl : na, "Long SL", color=color.new(color.red, 50),
+     style=plot.style_cross, linewidth=2)
+plot(show_levels ? long_tp : na, "Long TP", color=color.new(color.green, 50),
+     style=plot.style_cross, linewidth=2)
+plot(show_levels ? short_sl : na, "Short SL", color=color.new(color.red, 50),
+     style=plot.style_cross, linewidth=2)
+plot(show_levels ? short_tp : na, "Short TP", color=color.new(color.green, 50),
+     style=plot.style_cross, linewidth=2)
+
+// ============================================================
+// ALERT CONDITIONS
+// ============================================================
+// Use these with webhook URL pointing to your bot
+
+alertcondition(long_signal, "Long Entry",
+     '{"secret":"your_secret","symbol":"{{ticker}}","side":"buy","action":"open","price":{{close}},"strategy":"tv_combined","stop_loss":0,"take_profit":0,"message":"Long: {{ticker}} at {{close}}"}')
+
+alertcondition(short_signal, "Short Entry",
+     '{"secret":"your_secret","symbol":"{{ticker}}","side":"sell","action":"open","price":{{close}},"strategy":"tv_combined","stop_loss":0,"take_profit":0,"message":"Short: {{ticker}} at {{close}}"}')
+
+// ============================================================
+// INFO TABLE
+// ============================================================
+var table infoTable = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Indicator", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(infoTable, 1, 0, "Value", bgcolor=color.new(color.gray, 70), text_color=color.white)
+
+    table.cell(infoTable, 0, 1, "RSI (7)")
+    table.cell(infoTable, 1, 1, str.tostring(rsi_val, "#.0"),
+               text_color = rsi_val < 30 ? color.green : rsi_val > 70 ? color.red : color.white)
+
+    table.cell(infoTable, 0, 2, "MACD Hist")
+    table.cell(infoTable, 1, 2, str.tostring(hist, "#.####"),
+               text_color = hist > 0 ? color.green : color.red)
+
+    table.cell(infoTable, 0, 3, "Vol Ratio")
+    table.cell(infoTable, 1, 3, str.tostring(vol_ratio, "#.#") + "x",
+               text_color = vol_ratio > 1.5 ? color.green : color.gray)
+
+    table.cell(infoTable, 0, 4, "ADX")
+    table.cell(infoTable, 1, 4, str.tostring(adxValue, "#.0"),
+               text_color = adxValue > 25 ? color.green : color.gray)
+
+    table.cell(infoTable, 0, 5, "Squeeze")
+    table.cell(infoTable, 1, 5, squeeze_on ? "ON" : "OFF",
+               text_color = squeeze_on ? color.orange : color.green)
+
+    table.cell(infoTable, 0, 6, "Trend")
+    table.cell(infoTable, 1, 6, close > ema50 ? "BULL" : "BEAR",
+               text_color = close > ema50 ? color.green : color.red)
+
+    table.cell(infoTable, 0, 7, "Supertrend")
+    table.cell(infoTable, 1, 7, direction < 0 ? "UP" : "DOWN",
+               text_color = direction < 0 ? color.green : color.red)

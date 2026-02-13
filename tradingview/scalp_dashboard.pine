@@ -1,0 +1,134 @@
+// ============================================================
+// SCALP MOMENTUM DASHBOARD
+// Multi-timeframe analysis panel for manual/semi-auto trading
+// ============================================================
+// Shows key indicators across 3 timeframes for quick decision making.
+// Use alongside the combined_strategy indicator.
+// ============================================================
+
+//@version=5
+indicator("Scalp Momentum Dashboard", overlay=false)
+
+// ============================================================
+// INPUTS
+// ============================================================
+tf1 = input.timeframe("5", "Timeframe 1")
+tf2 = input.timeframe("15", "Timeframe 2")
+tf3 = input.timeframe("60", "Timeframe 3")
+
+// ============================================================
+// MULTI-TIMEFRAME DATA
+// ============================================================
+// RSI
+rsi1 = request.security(syminfo.tickerid, tf1, ta.rsi(close, 7))
+rsi2 = request.security(syminfo.tickerid, tf2, ta.rsi(close, 7))
+rsi3 = request.security(syminfo.tickerid, tf3, ta.rsi(close, 14))
+
+// EMA Trend
+ema9_1 = request.security(syminfo.tickerid, tf1, ta.ema(close, 9))
+ema21_1 = request.security(syminfo.tickerid, tf1, ta.ema(close, 21))
+ema9_2 = request.security(syminfo.tickerid, tf2, ta.ema(close, 9))
+ema21_2 = request.security(syminfo.tickerid, tf2, ta.ema(close, 21))
+ema9_3 = request.security(syminfo.tickerid, tf3, ta.ema(close, 12))
+ema21_3 = request.security(syminfo.tickerid, tf3, ta.ema(close, 26))
+
+// MACD
+[m1, s1, h1] = request.security(syminfo.tickerid, tf1, ta.macd(close, 12, 26, 9))
+[m2, s2, h2] = request.security(syminfo.tickerid, tf2, ta.macd(close, 12, 26, 9))
+[m3, s3, h3] = request.security(syminfo.tickerid, tf3, ta.macd(close, 12, 26, 9))
+
+// Volume
+vol1 = request.security(syminfo.tickerid, tf1, volume / ta.sma(volume, 20))
+vol2 = request.security(syminfo.tickerid, tf2, volume / ta.sma(volume, 20))
+vol3 = request.security(syminfo.tickerid, tf3, volume / ta.sma(volume, 20))
+
+// ADX
+[dp1, dm1, adx1] = request.security(syminfo.tickerid, tf1, ta.dmi(14, 14))
+[dp2, dm2, adx2] = request.security(syminfo.tickerid, tf2, ta.dmi(14, 14))
+[dp3, dm3, adx3] = request.security(syminfo.tickerid, tf3, ta.dmi(14, 14))
+
+// ============================================================
+// SCORING SYSTEM
+// ============================================================
+score(rsi, ema_f, ema_s, macd_h, vol, adx_v) =>
+    s = 0.0
+    // RSI momentum
+    s += rsi > 40 and rsi < 60 ? 0 : rsi < 30 ? 2 : rsi > 70 ? -2 : rsi < 50 ? 1 : -1
+    // EMA trend
+    s += ema_f > ema_s ? 1 : -1
+    // MACD
+    s += macd_h > 0 ? 1 : -1
+    // Volume
+    s += vol > 1.5 ? 1 : 0
+    // ADX
+    s += adx_v > 25 ? 1 : 0
+    s
+
+score1 = score(rsi1, ema9_1, ema21_1, h1, vol1, adx1)
+score2 = score(rsi2, ema9_2, ema21_2, h2, vol2, adx2)
+score3 = score(rsi3, ema9_3, ema21_3, h3, vol3, adx3)
+total_score = score1 + score2 + score3
+
+// Plot total score as histogram
+color_score = total_score > 3 ? color.green : total_score > 0 ? color.new(color.green, 50) : total_score < -3 ? color.red : total_score < 0 ? color.new(color.red, 50) : color.gray
+plot(total_score, "Total Score", color=color_score, style=plot.style_histogram, linewidth=3)
+hline(0, "Zero", color=color.gray)
+hline(3, "Strong Bull", color=color.new(color.green, 70))
+hline(-3, "Strong Bear", color=color.new(color.red, 70))
+
+// ============================================================
+// DASHBOARD TABLE
+// ============================================================
+var table dash = table.new(position.top_right, 7, 5, border_width=1)
+
+rsi_color(v) => v < 30 ? color.green : v > 70 ? color.red : color.gray
+trend_color(f, s) => f > s ? color.green : color.red
+macd_color(v) => v > 0 ? color.green : color.red
+vol_color(v) => v > 1.5 ? color.green : v > 1.0 ? color.yellow : color.gray
+score_color(v) => v >= 3 ? color.green : v <= -3 ? color.red : color.gray
+
+if barstate.islast
+    // Headers
+    table.cell(dash, 0, 0, "TF", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 1, 0, "RSI", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 2, 0, "Trend", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 3, 0, "MACD", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 4, 0, "Vol", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 5, 0, "ADX", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 6, 0, "Score", bgcolor=color.new(color.gray, 70), text_color=color.white)
+
+    // TF1
+    table.cell(dash, 0, 1, tf1)
+    table.cell(dash, 1, 1, str.tostring(rsi1, "#.0"), text_color=rsi_color(rsi1))
+    table.cell(dash, 2, 1, ema9_1 > ema21_1 ? "BULL" : "BEAR", text_color=trend_color(ema9_1, ema21_1))
+    table.cell(dash, 3, 1, h1 > 0 ? "+" : "-", text_color=macd_color(h1))
+    table.cell(dash, 4, 1, str.tostring(vol1, "#.#") + "x", text_color=vol_color(vol1))
+    table.cell(dash, 5, 1, str.tostring(adx1, "#.0"))
+    table.cell(dash, 6, 1, str.tostring(score1, "#.0"), text_color=score_color(score1))
+
+    // TF2
+    table.cell(dash, 0, 2, tf2)
+    table.cell(dash, 1, 2, str.tostring(rsi2, "#.0"), text_color=rsi_color(rsi2))
+    table.cell(dash, 2, 2, ema9_2 > ema21_2 ? "BULL" : "BEAR", text_color=trend_color(ema9_2, ema21_2))
+    table.cell(dash, 3, 2, h2 > 0 ? "+" : "-", text_color=macd_color(h2))
+    table.cell(dash, 4, 2, str.tostring(vol2, "#.#") + "x", text_color=vol_color(vol2))
+    table.cell(dash, 5, 2, str.tostring(adx2, "#.0"))
+    table.cell(dash, 6, 2, str.tostring(score2, "#.0"), text_color=score_color(score2))
+
+    // TF3
+    table.cell(dash, 0, 3, tf3)
+    table.cell(dash, 1, 3, str.tostring(rsi3, "#.0"), text_color=rsi_color(rsi3))
+    table.cell(dash, 2, 3, ema9_3 > ema21_3 ? "BULL" : "BEAR", text_color=trend_color(ema9_3, ema21_3))
+    table.cell(dash, 3, 3, h3 > 0 ? "+" : "-", text_color=macd_color(h3))
+    table.cell(dash, 4, 3, str.tostring(vol3, "#.#") + "x", text_color=vol_color(vol3))
+    table.cell(dash, 5, 3, str.tostring(adx3, "#.0"))
+    table.cell(dash, 6, 3, str.tostring(score3, "#.0"), text_color=score_color(score3))
+
+    // Total
+    table.cell(dash, 0, 4, "TOTAL", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.cell(dash, 6, 4, str.tostring(total_score, "#.0"),
+               bgcolor=total_score > 3 ? color.new(color.green, 70) : total_score < -3 ? color.new(color.red, 70) : color.new(color.gray, 70),
+               text_color=color.white)
+    // Signal recommendation
+    signal_text = total_score >= 4 ? "STRONG LONG" : total_score >= 2 ? "LONG" : total_score <= -4 ? "STRONG SHORT" : total_score <= -2 ? "SHORT" : "NEUTRAL"
+    table.cell(dash, 1, 4, signal_text, text_color=total_score > 0 ? color.green : total_score < 0 ? color.red : color.gray)
