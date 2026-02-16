@@ -109,22 +109,16 @@ trend_up = not use_trend_filter or close > ema50
 trend_down = not use_trend_filter or close < ema50
 
 // Long Scalp
-scalp_long = rsi_val > scalp_rsi_os and
-             rsi_val < 60 and
-             rsi_val > rsi_val[1] and
-             ema9 > ema21 and
-             hist > hist[1] and
-             vol_ratio > scalp_vol_mult and
-             trend_up
+scalp_long_rsi = rsi_val > scalp_rsi_os and rsi_val < 60 and rsi_val > rsi_val[1]
+scalp_long_momentum = ema9 > ema21 and hist > hist[1]
+scalp_long_vol = vol_ratio > scalp_vol_mult
+scalp_long = scalp_long_rsi and scalp_long_momentum and scalp_long_vol and trend_up
 
 // Short Scalp
-scalp_short = rsi_val < scalp_rsi_ob and
-              rsi_val > 40 and
-              rsi_val < rsi_val[1] and
-              ema9 < ema21 and
-              hist < hist[1] and
-              vol_ratio > scalp_vol_mult and
-              trend_down
+scalp_short_rsi = rsi_val < scalp_rsi_ob and rsi_val > 40 and rsi_val < rsi_val[1]
+scalp_short_momentum = ema9 < ema21 and hist < hist[1]
+scalp_short_vol = vol_ratio > scalp_vol_mult
+scalp_short = scalp_short_rsi and scalp_short_momentum and scalp_short_vol and trend_down
 
 // ============================================================
 // BREAKOUT VOLUME SIGNALS
@@ -134,16 +128,11 @@ was_squeezing = squeeze_on[1]
 squeeze_released = was_squeezing and squeeze_off
 
 // Breakout up
-breakout_up = close > highest_high[1] and
-              vol_ratio > break_vol_mult and
-              hist > 0 and
-              (squeeze_released or bbWidth < ta.sma(bbWidth, 20) * 0.8)
+break_squeeze_cond = squeeze_released or bbWidth < ta.sma(bbWidth, 20) * 0.8
+breakout_up = close > highest_high[1] and vol_ratio > break_vol_mult and hist > 0 and break_squeeze_cond
 
 // Breakout down
-breakout_down = close < lowest_low[1] and
-                vol_ratio > break_vol_mult and
-                hist < 0 and
-                (squeeze_released or bbWidth < ta.sma(bbWidth, 20) * 0.8)
+breakout_down = close < lowest_low[1] and vol_ratio > break_vol_mult and hist < 0 and break_squeeze_cond
 
 // ============================================================
 // COMBINED SIGNALS (avoid duplicate signals)
