@@ -28,24 +28,25 @@ class MeanRevertStrategy(BaseStrategy):
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Hammer / Pin bar
         body = abs(last["close"] - last["open"])
         lower_wick = min(last["open"], last["close"]) - last["low"]
         upper_wick = last["high"] - max(last["open"], last["close"])
         total_range = last["high"] - last["low"]
 
+        if total_range <= 0:
+            return False
+
         is_hammer = (
             lower_wick > body * 2 and
             upper_wick < body * 0.5 and
             last["close"] > last["open"]
-        ) if total_range > 0 else False
+        )
 
-        # Bullish engulfing
         is_engulfing = (
-            prev["close"] < prev["open"] and      # Previous was bearish
-            last["close"] > last["open"] and       # Current is bullish
-            last["close"] > prev["open"] and       # Current close > prev open
-            last["open"] < prev["close"]           # Current open < prev close
+            prev["close"] < prev["open"] and
+            last["close"] > last["open"] and
+            last["close"] > prev["open"] and
+            last["open"] < prev["close"]
         )
 
         return is_hammer or is_engulfing
@@ -57,17 +58,17 @@ class MeanRevertStrategy(BaseStrategy):
 
         body = abs(last["close"] - last["open"])
         upper_wick = last["high"] - max(last["open"], last["close"])
-        lower_wick = min(last["open"], last["close"]) - last["low"]
         total_range = last["high"] - last["low"]
 
-        # Shooting star
+        if total_range <= 0:
+            return False
+
         is_shooting_star = (
             upper_wick > body * 2 and
-            lower_wick < body * 0.5 and
+            (min(last["open"], last["close"]) - last["low"]) < body * 0.5 and
             last["close"] < last["open"]
-        ) if total_range > 0 else False
+        )
 
-        # Bearish engulfing
         is_engulfing = (
             prev["close"] > prev["open"] and
             last["close"] < last["open"] and
@@ -94,14 +95,14 @@ class MeanRevertStrategy(BaseStrategy):
         tp_pct = self.params["take_profit_pct"]
         sl_pct = self.params["stop_loss_pct"]
 
-        # Skip if market is strongly trending (ADX > 30 means trend-follow is better)
+        # Skip if market is strongly trending
         if adx_val > 35:
             return None
 
         # ============================================================
-        # LONG: Price at lower BB + RSI oversold
+        # LONG: Price at or below lower BB + RSI oversold
         # ============================================================
-        at_lower_bb = price <= bb_lower * 1.002
+        at_lower_bb = price <= bb_lower
         rsi_oversold = rsi_val < self.params["rsi_oversold"]
         bullish_candle = self._is_bullish_reversal(df)
 
@@ -134,9 +135,9 @@ class MeanRevertStrategy(BaseStrategy):
             )
 
         # ============================================================
-        # SHORT: Price at upper BB + RSI overbought
+        # SHORT: Price at or above upper BB + RSI overbought
         # ============================================================
-        at_upper_bb = price >= bb_upper * 0.998
+        at_upper_bb = price >= bb_upper
         rsi_overbought = rsi_val > self.params["rsi_overbought"]
         bearish_candle = self._is_bearish_reversal(df)
 

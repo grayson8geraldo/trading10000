@@ -10,8 +10,8 @@ Core responsibilities:
 6. Trailing stop management
 """
 
-import time
-from datetime import datetime, date
+import math
+from datetime import date
 from typing import Optional
 from utils.logger import log
 from config.settings import (
@@ -35,9 +35,23 @@ class RiskManager:
         self.open_positions_count = 0
         self.trading_halted = False
         self.halt_reason = ""
+        self._consecutive_api_failures = 0
+        self.MAX_API_FAILURES = 5
 
-    def update_capital(self, new_capital: float):
-        """Update current capital and check drawdown limits."""
+    def update_capital(self, new_capital: Optional[float]):
+        """
+        Update current capital and check drawdown limits.
+        Accepts None to indicate API failure — ignores update on None.
+        """
+        if new_capital is None:
+            self._consecutive_api_failures += 1
+            if self._consecutive_api_failures >= self.MAX_API_FAILURES:
+                self.trading_halted = True
+                self.halt_reason = f"Lost exchange connection ({self._consecutive_api_failures} failures)"
+                log.error(f"TRADING HALTED: {self.halt_reason}")
+            return
+
+        self._consecutive_api_failures = 0
         self.current_capital = new_capital
         self.peak_capital = max(self.peak_capital, new_capital)
 
@@ -56,6 +70,9 @@ class RiskManager:
 
     def _check_limits(self):
         """Check if any risk limits have been breached."""
+        if self.daily_start_capital <= 0:
+            return
+
         # Daily loss limit
         daily_change = (self.current_capital - self.daily_start_capital) / self.daily_start_capital
         if daily_change < -MAX_DAILY_LOSS_PCT:
@@ -64,11 +81,12 @@ class RiskManager:
             log.warning(f"TRADING HALTED: {self.halt_reason}")
 
         # Max drawdown from peak
-        drawdown = (self.peak_capital - self.current_capital) / self.peak_capital
-        if drawdown > MAX_DRAWDOWN_PCT:
-            self.trading_halted = True
-            self.halt_reason = f"Max drawdown hit: {drawdown*100:.1f}%"
-            log.warning(f"TRADING HALTED: {self.halt_reason}")
+        if self.peak_capital > 0:
+            drawdown = (self.peak_capital - self.current_capital) / self.peak_capital
+            if drawdown > MAX_DRAWDOWN_PCT:
+                self.trading_halted = True
+                self.halt_reason = f"Max drawdown hit: {drawdown*100:.1f}%"
+                log.warning(f"TRADING HALTED: {self.halt_reason}")
 
     def get_current_phase(self) -> dict:
         """Determine which phase we're in based on current capital."""
@@ -76,7 +94,7 @@ class RiskManager:
             low, high = phase["capital_range"]
             if low <= self.current_capital < high:
                 return phase
-        return PHASES[-1]  # Default to last phase
+        return PHASES[-1]  # Default to last (most conservative) phase
 
     def can_trade(self) -> tuple:
         """Check if trading is allowed."""
@@ -94,16 +112,16 @@ class RiskManager:
         entry_price: float,
         stop_loss: float,
         symbol: str,
-    ) -> dict:
+    ) -> Optional[dict]:
         """
         Calculate position size based on risk parameters.
 
         Uses fixed fractional risk: risk a percentage of capital per trade,
         then calculate position size so that if SL is hit, the loss = risk amount.
-
-        Returns:
-            dict with: amount, leverage, risk_amount, margin_required
         """
+        if self.current_capital <= 0 or entry_price <= 0:
+            return None
+
         phase = self.get_current_phase()
         risk_pct = phase["risk_per_trade"]
         max_leverage = phase["max_leverage"]
@@ -123,10 +141,10 @@ class RiskManager:
 
         # Calculate required leverage
         max_margin = self.current_capital * 0.5  # Never use more than 50% as margin
-        required_leverage = position_value / max_margin
+        required_leverage = position_value / max_margin if max_margin > 0 else max_leverage
 
-        # Cap leverage
-        leverage = min(int(required_leverage) + 1, max_leverage)
+        # Cap leverage — use math.ceil for correct rounding
+        leverage = min(math.ceil(required_leverage), max_leverage)
         leverage = max(leverage, 1)
 
         # Recalculate with actual leverage
@@ -140,13 +158,17 @@ class RiskManager:
         if actual_risk > self.current_capital * 0.08:  # Hard cap: never risk >8% of capital
             position_size_base = (self.current_capital * 0.08) / risk_per_unit
             position_value = position_size_base * entry_price
-            leverage = min(int(position_value / (self.current_capital * 0.4)) + 1, max_leverage)
+            leverage = min(math.ceil(position_value / (self.current_capital * 0.4)), max_leverage)
+            actual_risk = position_size_base * risk_per_unit
+
+        if position_size_base <= 0:
+            return None
 
         return {
             "amount": round(position_size_base, 6),
             "leverage": leverage,
-            "risk_amount": round(position_size_base * risk_per_unit, 2),
-            "margin_required": round(position_value / leverage, 2),
+            "risk_amount": round(actual_risk, 2),
+            "margin_required": round(position_value / leverage, 2) if leverage > 0 else 0,
             "position_value": round(position_value, 2),
             "risk_pct_of_capital": round(actual_risk / self.current_capital * 100, 2),
         }
@@ -161,15 +183,12 @@ class RiskManager:
         """
         Calculate trailing stop price.
 
-        Args:
-            side: "buy" (long) or "sell" (short)
-            entry_price: Original entry price
-            current_price: Current market price
-            current_sl: Current stop loss price
-
         Returns:
             New stop loss price, or None if no change needed
         """
+        if entry_price <= 0:
+            return None
+
         if side == "buy":
             pnl_pct = (current_price - entry_price) / entry_price
 
@@ -207,7 +226,7 @@ class RiskManager:
         phase = self.get_current_phase()
         drawdown = (self.peak_capital - self.current_capital) / self.peak_capital if self.peak_capital > 0 else 0
         daily_change = (self.current_capital - self.daily_start_capital) / self.daily_start_capital if self.daily_start_capital > 0 else 0
-        growth = (self.current_capital - self.initial_capital) / self.initial_capital
+        growth = (self.current_capital - self.initial_capital) / self.initial_capital if self.initial_capital > 0 else 0
 
         return {
             "phase": phase["name"],

@@ -18,8 +18,8 @@ def clear_screen():
 def print_header():
     print(Fore.CYAN + Style.BRIGHT + """
   ╔═══════════════════════════════════════════════════════════╗
-  ║           CRYPTO FUTURES TRADING BOT v1.0                ║
-  ║           Target: $100 → $10,000 in 30 days              ║
+  ║       CRYPTO FUTURES TRADING BOT v2.0                     ║
+  ║       Regime-Aware | MTF-Confirmed | $100 → $10K         ║
   ╚═══════════════════════════════════════════════════════════╝
     """ + Style.RESET_ALL)
 
@@ -46,6 +46,11 @@ def print_capital_progress(risk_status: dict):
 
     if risk_status["trading_halted"]:
         print(f"\n  {Fore.RED}⚠ TRADING HALTED: {risk_status['halt_reason']}{Style.RESET_ALL}")
+
+    # Market regime
+    regime = risk_status.get("regime", "")
+    if regime:
+        print(f"\n  {Fore.WHITE}Regime:  {Fore.CYAN}{regime}{Style.RESET_ALL}")
 
 
 def print_risk_info(risk_status: dict):

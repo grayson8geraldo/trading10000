@@ -257,7 +257,7 @@ class BacktestEngine:
 
         # Sharpe ratio approximation
         returns = pd.Series(pnls)
-        sharpe = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
+        sharpe = (returns.mean() / returns.std() * np.sqrt(365)) if returns.std() > 0 else 0
 
         return {
             "total_trades": len(self.trades),

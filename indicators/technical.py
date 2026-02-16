@@ -1,6 +1,7 @@
 """
 Technical Analysis Indicators.
 Optimized for crypto futures scalping and swing trading.
+All functions are NaN-safe with division-by-zero protection.
 """
 
 import numpy as np
@@ -8,11 +9,26 @@ import pandas as pd
 
 
 def ohlcv_to_dataframe(ohlcv: list) -> pd.DataFrame:
-    """Convert CCXT OHLCV data to a pandas DataFrame."""
+    """Convert CCXT OHLCV data to a pandas DataFrame with validation."""
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("timestamp", inplace=True)
+    # Drop rows with any NaN in OHLCV
+    df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+    # Ensure numeric types
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna()
     return df
+
+
+def _safe_div(numerator, denominator, fill=0.0):
+    """Safe division that handles zero denominators."""
+    if isinstance(denominator, pd.Series):
+        return numerator / denominator.replace(0, np.nan).fillna(fill)
+    if denominator == 0:
+        return fill
+    return numerator / denominator
 
 
 # ============================================================
@@ -31,7 +47,8 @@ def sma(series: pd.Series, period: int) -> pd.Series:
 
 def vwma(df: pd.DataFrame, period: int) -> pd.Series:
     """Volume Weighted Moving Average."""
-    return (df["close"] * df["volume"]).rolling(period).sum() / df["volume"].rolling(period).sum()
+    vol_sum = df["volume"].rolling(period).sum()
+    return _safe_div((df["close"] * df["volume"]).rolling(period).sum(), vol_sum)
 
 
 # ============================================================
@@ -45,16 +62,18 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
-    rs = avg_gain / avg_loss
+    rs = _safe_div(avg_gain, avg_loss)
     return 100 - (100 / (1 + rs))
 
 
 def stochastic_rsi(series: pd.Series, rsi_period: int = 14, stoch_period: int = 14,
                     k_period: int = 3, d_period: int = 3) -> tuple:
-    """Stochastic RSI - K and D lines."""
+    """Stochastic RSI - K and D lines. Division-by-zero safe."""
     rsi_vals = rsi(series, rsi_period)
-    stoch_rsi = (rsi_vals - rsi_vals.rolling(stoch_period).min()) / \
-                (rsi_vals.rolling(stoch_period).max() - rsi_vals.rolling(stoch_period).min())
+    rsi_min = rsi_vals.rolling(stoch_period).min()
+    rsi_max = rsi_vals.rolling(stoch_period).max()
+    denom = (rsi_max - rsi_min).replace(0, np.nan)
+    stoch_rsi = ((rsi_vals - rsi_min) / denom).fillna(0.5)
     k = stoch_rsi.rolling(k_period).mean() * 100
     d = k.rolling(d_period).mean()
     return k, d
@@ -71,10 +90,11 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> 
 
 
 def williams_r(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Williams %R."""
+    """Williams %R. Division-by-zero safe."""
     highest_high = df["high"].rolling(period).max()
     lowest_low = df["low"].rolling(period).min()
-    return -100 * (highest_high - df["close"]) / (highest_high - lowest_low)
+    denom = (highest_high - lowest_low).replace(0, np.nan)
+    return ((-100 * (highest_high - df["close"])) / denom).fillna(-50)
 
 
 # ============================================================
@@ -127,7 +147,6 @@ def squeeze_momentum(df: pd.DataFrame, bb_period: int = 20, bb_std: float = 2.0,
     m1 = (highest + lowest) / 2
     val = df["close"] - (m1 + kc_mid) / 2
 
-    # Simple approximation of linear regression value
     momentum = val.rolling(kc_period).mean()
 
     return squeeze_on, momentum
@@ -184,11 +203,12 @@ def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
     atr_val = atr(df, period)
 
-    plus_di = 100 * ema(plus_dm, period) / atr_val
-    minus_di = 100 * ema(minus_dm, period) / atr_val
+    plus_di = _safe_div(100 * ema(plus_dm, period), atr_val)
+    minus_di = _safe_div(100 * ema(minus_dm, period), atr_val)
 
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)
-    adx_val = ema(dx.fillna(0), period)
+    di_sum = (plus_di + minus_di).replace(0, np.nan)
+    dx = (100 * abs(plus_di - minus_di) / di_sum).fillna(0)
+    adx_val = ema(dx, period)
 
     return adx_val
 
@@ -205,6 +225,9 @@ def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> t
 
     supertrend_vals = pd.Series(index=df.index, dtype=float)
     direction = pd.Series(index=df.index, dtype=int)
+
+    if len(df) == 0:
+        return supertrend_vals, direction
 
     supertrend_vals.iloc[0] = upper_band.iloc[0]
     direction.iloc[0] = 1
@@ -235,6 +258,9 @@ def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> t
 
 def pivot_points(df: pd.DataFrame) -> dict:
     """Calculate classic pivot points from the last completed candle."""
+    if len(df) < 2:
+        return {"pivot": 0, "r1": 0, "r2": 0, "r3": 0, "s1": 0, "s2": 0, "s3": 0}
+
     h = df["high"].iloc[-2]
     l = df["low"].iloc[-2]
     c = df["close"].iloc[-2]
@@ -255,20 +281,25 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 50, threshold: flo
     Find support and resistance levels based on price clustering.
     Returns: (support_levels, resistance_levels)
     """
+    if len(df) < 3:
+        return [], []
+
     recent = df.tail(lookback)
     highs = recent["high"].values
     lows = recent["low"].values
     close = df["close"].iloc[-1]
 
-    # Cluster nearby highs and lows
     levels = np.concatenate([highs, lows])
     levels.sort()
+
+    if len(levels) == 0:
+        return [], []
 
     clusters = []
     current_cluster = [levels[0]]
 
     for i in range(1, len(levels)):
-        if abs(levels[i] - current_cluster[-1]) / current_cluster[-1] < threshold:
+        if current_cluster[-1] > 0 and abs(levels[i] - current_cluster[-1]) / current_cluster[-1] < threshold:
             current_cluster.append(levels[i])
         else:
             if len(current_cluster) >= 3:
@@ -292,15 +323,16 @@ def compute_all_indicators(df: pd.DataFrame, params: dict = None) -> pd.DataFram
     """
     Compute all relevant indicators and add them to the dataframe.
     This is the main function used by strategies.
+    Includes ALL standard EMA periods so strategies can reference any of them.
     """
     if params is None:
         params = {}
 
-    # EMAs
-    df["ema_9"] = ema(df["close"], 9)
-    df["ema_21"] = ema(df["close"], 21)
-    df["ema_50"] = ema(df["close"], 50)
-    df["ema_200"] = ema(df["close"], 200)
+    # EMAs — compute all commonly used periods
+    for period in [9, 12, 20, 21, 26, 50, 200]:
+        col = f"ema_{period}"
+        if col not in df.columns:
+            df[col] = ema(df["close"], period)
 
     # RSI
     df["rsi"] = rsi(df["close"], params.get("rsi_period", 14))
@@ -314,14 +346,15 @@ def compute_all_indicators(df: pd.DataFrame, params: dict = None) -> pd.DataFram
 
     # Bollinger Bands
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(df["close"])
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
+    bb_denom = df["bb_mid"].replace(0, np.nan)
+    df["bb_width"] = ((df["bb_upper"] - df["bb_lower"]) / bb_denom).fillna(0)
 
     # ATR
     df["atr"] = atr(df)
 
     # Volume
     df["vol_sma"] = volume_sma(df)
-    df["vol_ratio"] = df["volume"] / df["vol_sma"]
+    df["vol_ratio"] = _safe_div(df["volume"], df["vol_sma"])
 
     # OBV
     df["obv"] = obv(df)

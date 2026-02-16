@@ -33,6 +33,9 @@ class SwingStrategy(BaseStrategy):
         prev = df.iloc[-2]
         price = last["close"]
 
+        if price <= 0:
+            return None
+
         ema_fast = last["ema_21"]
         ema_slow = last["ema_50"]
         rsi_val = last["rsi"]
@@ -53,23 +56,24 @@ class SwingStrategy(BaseStrategy):
         near_support = False
         support_level = None
         for s in supports:
-            if abs(price - s) / price < 0.01:  # Within 1% of support
+            if s > 0 and abs(price - s) / price < 0.01:
                 near_support = True
                 support_level = s
                 break
 
-        # Also check pivot support
         for key in ["s1", "s2"]:
-            if abs(price - pivots[key]) / price < 0.01:
+            pval = pivots[key]
+            if pval > 0 and abs(price - pval) / price < 0.01:
                 near_support = True
-                support_level = pivots[key]
+                if support_level is None:
+                    support_level = pval
 
         long_conditions = [
-            ema_fast > ema_slow,                  # Uptrend
-            near_support,                          # Near support level
-            rsi_val > 35 and rsi_val < 65,        # RSI not extreme
-            rsi_val > prev["rsi"],                 # RSI rising
-            last["macd_hist"] > prev["macd_hist"], # MACD improving
+            ema_fast > ema_slow,
+            near_support,
+            rsi_val > 35 and rsi_val < 65,
+            rsi_val > prev["rsi"],
+            last["macd_hist"] > prev["macd_hist"],
         ]
 
         long_bonus = [
@@ -81,7 +85,9 @@ class SwingStrategy(BaseStrategy):
 
         if all(long_conditions):
             confidence = 0.55 + 0.1 * sum(long_bonus)
-            sl = min(support_level * 0.99, price * (1 - sl_pct)) if support_level else price * (1 - sl_pct)
+            # Use max() for long SL — pick the LOWER (wider) stop for safety
+            default_sl = price * (1 - sl_pct)
+            sl = min(support_level * 0.99, default_sl) if support_level else default_sl
             return Signal(
                 symbol=symbol,
                 side="buy",
@@ -101,15 +107,17 @@ class SwingStrategy(BaseStrategy):
         near_resistance = False
         resistance_level = None
         for r in resistances:
-            if abs(price - r) / price < 0.01:
+            if r > 0 and abs(price - r) / price < 0.01:
                 near_resistance = True
                 resistance_level = r
                 break
 
         for key in ["r1", "r2"]:
-            if abs(price - pivots[key]) / price < 0.01:
+            pval = pivots[key]
+            if pval > 0 and abs(price - pval) / price < 0.01:
                 near_resistance = True
-                resistance_level = pivots[key]
+                if resistance_level is None:
+                    resistance_level = pval
 
         short_conditions = [
             ema_fast < ema_slow,
@@ -128,7 +136,9 @@ class SwingStrategy(BaseStrategy):
 
         if all(short_conditions):
             confidence = 0.55 + 0.1 * sum(short_bonus)
-            sl = max(resistance_level * 1.01, price * (1 + sl_pct)) if resistance_level else price * (1 + sl_pct)
+            # Use max() for short SL — pick the HIGHER (wider) stop for safety
+            default_sl = price * (1 + sl_pct)
+            sl = max(resistance_level * 1.01, default_sl) if resistance_level else default_sl
             return Signal(
                 symbol=symbol,
                 side="sell",

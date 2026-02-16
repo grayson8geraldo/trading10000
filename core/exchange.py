@@ -1,6 +1,7 @@
 """
 Exchange integration via CCXT.
 Supports Bybit and Binance futures with unified interface.
+Includes proper error handling and trailing stop updates.
 """
 
 import ccxt
@@ -18,6 +19,8 @@ class ExchangeClient:
     def __init__(self):
         self.exchange = self._init_exchange()
         self.positions = {}
+        self._balance_error_count = 0
+        self._last_known_balance = None
         log.info(f"Exchange initialized: {EXCHANGE} (testnet={TESTNET})")
 
     def _init_exchange(self):
@@ -45,25 +48,33 @@ class ExchangeClient:
 
         return exchange
 
-    def get_balance(self) -> float:
-        """Get USDT balance."""
+    def get_balance(self) -> Optional[float]:
+        """Get USDT balance. Returns None on error (not 0.0)."""
         try:
             balance = self.exchange.fetch_balance()
             usdt = balance.get("USDT", {})
-            return float(usdt.get("free", 0))
+            val = float(usdt.get("free", 0))
+            self._balance_error_count = 0
+            self._last_known_balance = val
+            return val
         except Exception as e:
-            log.error(f"Failed to fetch balance: {e}")
-            return 0.0
+            self._balance_error_count += 1
+            log.error(f"Failed to fetch balance (attempt #{self._balance_error_count}): {e}")
+            return None
 
-    def get_total_equity(self) -> float:
-        """Get total equity including unrealized PnL."""
+    def get_total_equity(self) -> Optional[float]:
+        """Get total equity including unrealized PnL. Returns None on error."""
         try:
             balance = self.exchange.fetch_balance()
             usdt = balance.get("USDT", {})
-            return float(usdt.get("total", 0))
+            val = float(usdt.get("total", 0))
+            self._balance_error_count = 0
+            self._last_known_balance = val
+            return val
         except Exception as e:
-            log.error(f"Failed to fetch equity: {e}")
-            return 0.0
+            self._balance_error_count += 1
+            log.error(f"Failed to fetch equity (attempt #{self._balance_error_count}): {e}")
+            return None
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> list:
         """Fetch OHLCV candlestick data."""
@@ -87,8 +98,8 @@ class ExchangeClient:
         try:
             self.exchange.set_margin_mode(mode, symbol)
         except Exception as e:
-            # Some exchanges don't need this or it's already set
-            pass
+            # Some exchanges already have this set
+            log.debug(f"Margin mode set note for {symbol}: {e}")
 
     def open_position(
         self,
@@ -100,18 +111,9 @@ class ExchangeClient:
         take_profit: Optional[float] = None,
     ) -> Optional[dict]:
         """
-        Open a futures position with optional SL/TP.
+        Open a futures position with SL/TP.
 
-        Args:
-            symbol: Trading pair (e.g., "BTC/USDT")
-            side: "buy" (long) or "sell" (short)
-            amount: Position size in contracts/base currency
-            leverage: Leverage multiplier
-            stop_loss: Stop loss price
-            take_profit: Take profit price
-
-        Returns:
-            Order dict or None on failure
+        If SL fails to set, the position is closed immediately for safety.
         """
         try:
             self.set_margin_mode(symbol, "isolated")
@@ -130,26 +132,24 @@ class ExchangeClient:
                 f"Order ID: {order['id']}"
             )
 
-            # Set stop loss
+            # Set stop loss — CRITICAL for risk management
+            sl_set = False
             if stop_loss:
                 sl_side = "sell" if side == "buy" else "buy"
                 try:
-                    self.exchange.create_order(
-                        symbol=symbol,
-                        type="stop_market" if EXCHANGE == "binance" else "market",
-                        side=sl_side,
-                        amount=amount,
-                        params={
-                            "stopLossPrice" if EXCHANGE == "bybit" else "stopPrice": stop_loss,
-                            "triggerPrice": stop_loss,
-                            "reduceOnly": True,
-                        },
-                    )
+                    self._place_stop_loss(symbol, sl_side, amount, stop_loss)
+                    sl_set = True
                     log.info(f"  SL set at {stop_loss}")
                 except Exception as e:
-                    log.warning(f"  Failed to set SL: {e}")
+                    log.error(f"  CRITICAL: Failed to set SL: {e}")
 
-            # Set take profit
+            # If SL failed, close position for safety
+            if stop_loss and not sl_set:
+                log.error(f"  Closing position {symbol} — SL could not be set!")
+                self.close_position(symbol, side, amount)
+                return None
+
+            # Set take profit (non-critical)
             if take_profit:
                 tp_side = "sell" if side == "buy" else "buy"
                 try:
@@ -163,13 +163,59 @@ class ExchangeClient:
                     )
                     log.info(f"  TP set at {take_profit}")
                 except Exception as e:
-                    log.warning(f"  Failed to set TP: {e}")
+                    log.warning(f"  Failed to set TP (will manage manually): {e}")
 
             return order
 
         except Exception as e:
             log.error(f"Failed to open {side} position for {symbol}: {e}")
             return None
+
+    def _place_stop_loss(self, symbol: str, side: str, amount: float, stop_price: float):
+        """Place a stop-loss order. Raises on failure."""
+        if EXCHANGE == "bybit":
+            self.exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side=side,
+                amount=amount,
+                params={
+                    "stopLossPrice": stop_price,
+                    "triggerPrice": stop_price,
+                    "reduceOnly": True,
+                },
+            )
+        else:
+            self.exchange.create_order(
+                symbol=symbol,
+                type="stop_market",
+                side=side,
+                amount=amount,
+                params={
+                    "stopPrice": stop_price,
+                    "reduceOnly": True,
+                },
+            )
+
+    def update_stop_loss(self, symbol: str, side: str, amount: float, new_sl: float) -> bool:
+        """
+        Update stop loss by cancelling old orders and placing new one.
+        This is the actual trailing stop implementation on the exchange.
+        Returns True on success.
+        """
+        try:
+            # Cancel existing stop orders for this symbol
+            self.cancel_all_orders(symbol)
+            time.sleep(0.3)  # Brief delay for exchange to process
+
+            # Place new SL
+            sl_side = "sell" if side == "buy" else "buy"
+            self._place_stop_loss(symbol, sl_side, amount, new_sl)
+            log.info(f"SL updated on exchange for {symbol}: {new_sl:.4f}")
+            return True
+        except Exception as e:
+            log.error(f"Failed to update SL for {symbol}: {e}")
+            return False
 
     def close_position(self, symbol: str, side: str, amount: float) -> Optional[dict]:
         """Close an open position."""
@@ -183,6 +229,8 @@ class ExchangeClient:
                 params={"reduceOnly": True},
             )
             log.info(f"CLOSED {side.upper()} {symbol} | Amount: {amount}")
+            # Cancel any remaining orders (SL/TP)
+            self.cancel_all_orders(symbol)
             return order
         except Exception as e:
             log.error(f"Failed to close position {symbol}: {e}")
@@ -204,9 +252,8 @@ class ExchangeClient:
         """Cancel all open orders for a symbol."""
         try:
             self.exchange.cancel_all_orders(symbol)
-            log.info(f"All orders cancelled for {symbol}")
         except Exception as e:
-            log.warning(f"Failed to cancel orders for {symbol}: {e}")
+            log.debug(f"Cancel orders note for {symbol}: {e}")
 
     def get_ticker(self, symbol: str) -> dict:
         """Get current ticker data."""
@@ -223,6 +270,15 @@ class ExchangeClient:
         except Exception as e:
             log.error(f"Failed to fetch orderbook for {symbol}: {e}")
             return {}
+
+    def get_funding_rate(self, symbol: str) -> Optional[float]:
+        """Get current funding rate for a perpetual contract."""
+        try:
+            funding = self.exchange.fetch_funding_rate(symbol)
+            return float(funding.get("fundingRate", 0))
+        except Exception as e:
+            log.debug(f"Failed to get funding rate for {symbol}: {e}")
+            return None
 
     def get_market_info(self, symbol: str) -> dict:
         """Get market info (min order size, tick size, etc.)."""

@@ -35,15 +35,22 @@ class BreakoutVolumeStrategy(BaseStrategy):
         price = last["close"]
         atr_val = last["atr"]
 
+        if pd.isna(atr_val) or atr_val <= 0:
+            return None
+
         vol_surge = self.params["volume_surge_mult"]
         atr_sl = self.params["atr_multiplier_sl"]
         atr_tp = self.params["atr_multiplier_tp"]
 
-        # Find consolidation: BB width narrowing (squeeze)
+        # Squeeze detection — use scalar boolean values safely
+        squeeze_prev = bool(prev["squeeze_on"]) if not pd.isna(prev["squeeze_on"]) else False
+        squeeze_curr = bool(last["squeeze_on"]) if not pd.isna(last["squeeze_on"]) else False
+        squeeze_released = squeeze_prev and not squeeze_curr
+
+        # BB width narrowing
         bb_width_current = last["bb_width"]
-        bb_width_avg = df["bb_width"].rolling(20).mean().iloc[-1]
-        was_squeezing = prev["squeeze_on"] if not pd.isna(prev["squeeze_on"]) else False
-        squeeze_released = was_squeezing and not last["squeeze_on"]
+        bb_width_avg = df["bb_width"].tail(20).mean()
+        is_narrow_bb = bb_width_current < bb_width_avg * 0.8
 
         # Find support/resistance levels
         supports, resistances = find_support_resistance(
@@ -57,6 +64,8 @@ class BreakoutVolumeStrategy(BaseStrategy):
         is_consolidated = recent_range < avg_range * 0.6
 
         vol_ratio = last["vol_ratio"]
+        if pd.isna(vol_ratio):
+            vol_ratio = 0
 
         # ============================================================
         # LONG BREAKOUT
@@ -68,7 +77,6 @@ class BreakoutVolumeStrategy(BaseStrategy):
                 prev["close"] <= nearest_resistance
             )
         else:
-            # Fallback: price breaks above recent high
             recent_high = df["high"].tail(self.params["lookback_period"]).max()
             breakout_up = price >= recent_high and prev["close"] < recent_high
 
@@ -76,7 +84,7 @@ class BreakoutVolumeStrategy(BaseStrategy):
             breakout_up,
             vol_ratio > vol_surge,
             last["macd_hist"] > 0,
-            (is_consolidated or squeeze_released),
+            (is_consolidated or squeeze_released or is_narrow_bb),
         ]
 
         long_bonus = [
@@ -121,7 +129,7 @@ class BreakoutVolumeStrategy(BaseStrategy):
             breakout_down,
             vol_ratio > vol_surge,
             last["macd_hist"] < 0,
-            (is_consolidated or squeeze_released),
+            (is_consolidated or squeeze_released or is_narrow_bb),
         ]
 
         short_bonus = [
