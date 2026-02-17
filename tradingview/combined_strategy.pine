@@ -13,7 +13,7 @@
 // ============================================================
 
 //@version=5
-indicator("Crypto Aggressive Scalp+Breakout", overlay=true, max_labels_count=50)
+indicator("Crypto Aggressive Scalp+Breakout", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // ============================================================
 // INPUTS
@@ -142,9 +142,10 @@ var int last_signal_bar = 0
 cooldown = 5
 can_signal = bar_index - last_signal_bar > cooldown
 
-// Final signals
-long_signal = can_signal and ((show_scalp and scalp_long) or (show_breakout and breakout_up))
-short_signal = can_signal and ((show_scalp and scalp_short) or (show_breakout and breakout_down))
+// Final signals — only on CONFIRMED (closed) bars to prevent repainting
+confirmed = barstate.isconfirmed
+long_signal = confirmed and can_signal and ((show_scalp and scalp_long) or (show_breakout and breakout_up))
+short_signal = confirmed and can_signal and ((show_scalp and scalp_short) or (show_breakout and breakout_down))
 
 // Determine signal type for labeling
 is_scalp_long = show_scalp and scalp_long
@@ -152,15 +153,40 @@ is_breakout_long = show_breakout and breakout_up
 is_scalp_short = show_scalp and scalp_short
 is_breakout_short = show_breakout and breakout_down
 
-// Calculate SL/TP
-long_sl = long_signal ? (is_breakout_long ? close - atr_val * break_atr_sl : close * (1 - scalp_sl)) : na
-long_tp = long_signal ? (is_breakout_long ? close + atr_val * break_atr_tp : close * (1 + scalp_tp)) : na
-short_sl = short_signal ? (is_breakout_short ? close + atr_val * break_atr_sl : close * (1 + scalp_sl)) : na
-short_tp = short_signal ? (is_breakout_short ? close - atr_val * break_atr_tp : close * (1 - scalp_tp)) : na
+// Persistent SL/TP levels using var (survive across bars)
+var float active_sl = na
+var float active_tp = na
+var bool active_is_long = false
+var int active_signal_bar = na
 
-// Track signals
-if long_signal or short_signal
+// Calculate and store SL/TP on signal
+if long_signal
+    active_sl := is_breakout_long ? close - atr_val * break_atr_sl : close * (1 - scalp_sl)
+    active_tp := is_breakout_long ? close + atr_val * break_atr_tp : close * (1 + scalp_tp)
+    active_is_long := true
+    active_signal_bar := bar_index
     last_signal_bar := bar_index
+
+if short_signal
+    active_sl := is_breakout_short ? close + atr_val * break_atr_sl : close * (1 + scalp_sl)
+    active_tp := is_breakout_short ? close - atr_val * break_atr_tp : close * (1 - scalp_tp)
+    active_is_long := false
+    active_signal_bar := bar_index
+    last_signal_bar := bar_index
+
+// Auto-clear SL/TP after 50 bars or if hit
+sl_tp_active = not na(active_signal_bar) and bar_index - active_signal_bar < 50
+if sl_tp_active and active_is_long and (high >= active_tp or low <= active_sl)
+    active_sl := na
+    active_tp := na
+    active_signal_bar := na
+if sl_tp_active and not active_is_long and (low <= active_tp or high >= active_sl)
+    active_sl := na
+    active_tp := na
+    active_signal_bar := na
+if not sl_tp_active
+    active_sl := na
+    active_tp := na
 
 // ============================================================
 // PLOTTING
@@ -176,13 +202,13 @@ plot(supertrend, "Supertrend",
      color=direction < 0 ? color.green : color.red,
      linewidth=2, style=plot.style_linebr)
 
-// Squeeze dots
-plotshape(squeeze_on, "Squeeze On", shape.circle, location.bottom,
+// Squeeze dots — only on confirmed bars
+plotshape(squeeze_on and confirmed, "Squeeze On", shape.circle, location.bottom,
           color=color.new(color.red, 0), size=size.tiny)
-plotshape(squeeze_released, "Squeeze Fire", shape.diamond, location.bottom,
+plotshape(squeeze_released and confirmed, "Squeeze Fire", shape.diamond, location.bottom,
           color=color.new(color.lime, 0), size=size.small)
 
-// Signal markers
+// Signal markers — already filtered by barstate.isconfirmed
 plotshape(long_signal, "Long Signal", shape.triangleup, location.belowbar,
           color=color.new(color.green, 0), size=size.normal,
           text="LONG")
@@ -190,15 +216,11 @@ plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar,
           color=color.new(color.red, 0), size=size.normal,
           text="SHORT")
 
-// SL/TP levels
-plot(show_levels ? long_sl : na, "Long SL", color=color.new(color.red, 50),
-     style=plot.style_cross, linewidth=2)
-plot(show_levels ? long_tp : na, "Long TP", color=color.new(color.green, 50),
-     style=plot.style_cross, linewidth=2)
-plot(show_levels ? short_sl : na, "Short SL", color=color.new(color.red, 50),
-     style=plot.style_cross, linewidth=2)
-plot(show_levels ? short_tp : na, "Short TP", color=color.new(color.green, 50),
-     style=plot.style_cross, linewidth=2)
+// SL/TP persistent horizontal lines
+plot(show_levels and sl_tp_active ? active_sl : na, "Active SL",
+     color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1)
+plot(show_levels and sl_tp_active ? active_tp : na, "Active TP",
+     color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
 
 // ============================================================
 // ALERT CONDITIONS
